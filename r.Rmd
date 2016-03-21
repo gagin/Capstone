@@ -1,0 +1,238 @@
+---
+title: "Exploration of Coursera SwiftKey dataset"
+author: "Alex"
+date: "March 20, 2016"
+output: html_document
+---
+
+This is an intermediate report on building a typing prediction app based
+on a dataset 
+provided by SwiftKey. For English, Russian, French and German is has
+collections of Twitter posts, blog posts and news articles. This review
+is focused on exploring the data provided.
+
+```{r, include=FALSE}
+# install.packages("SnowballC")
+library(tm)
+library(dplyr)
+library(ggplot2)
+library(scales)
+```
+
+# General considerations
+
+The typing predictions apps are now ubiquitous - for example, Android OS have
+this feature enabled by default, so most people would have a general expectation
+for how it would work. The practical suggestions don't type everything for you,
+but you don't have to go back and modify something already inserted. The good
+test for the typing prediction algorithm is a game - user types just one word
+(or even several characters), and then confirms everything app suggests (taking
+the first choice). The
+resulting phrase should be cohesive and meaningful.
+
+To accomplish that, algorithm should
+
+- take in account what's already been typed,
+- separate word forms in suggestions,
+- include articles and punctuation,
+- recognize cases of lowercase and uppercase.
+
+As a first approach to this goal, let's try to build frequencies for words and
+sequencies of two words (so called 2-grams or bigrams), so for first characters
+word frequency will be used, and after that - frequency for bigrams. For the
+exploration, we'll use cleaned up and stemmed words, but we should keep in mind
+that the final app should suggest full forms to the user, and that should
+be handled later.
+
+# Basic statistics
+
+Let's see how many strings in each file in English, and average line of a string.
+
+```{r, warning=FALSE}
+con <- file("en_US/en_US.twitter.txt", "r")
+texts <- readLines(con)
+close(con)
+length(texts)
+median(nchar(texts))
+
+con <- file("en_US/en_US.blogs.txt", "r")
+texts <- readLines(con)
+close(con)
+length(texts)
+median(nchar(texts))
+
+con <- file("en_US/en_US.news.txt", "r")
+texts <- readLines(con)
+close(con)
+length(texts)
+median(nchar(texts))
+```
+
+
+# Dataset size consideration
+
+The dataset is large, so for performance reasons we'll have to pre-process it
+offline, and then lookup frequencies in pre-build data structures. For this
+exercise though, we'll do on-demand calculations, but on a subset of the data.
+
+```{r}
+con <- file("en_US/en_US.twitter.txt", "r")
+en.twitter.lines <- readLines(con, 5000)
+close(con)
+```
+
+Let's see the most frequent words in dataset, to see if Twitter, blog and news
+are really different, and to decide if they should be just concatenated, or
+treated separately depending on the context of the typing (e.g. Twitter
+frequencies should be a priority for text messaging, while news articles - for
+context where serious texts are to be typed).
+
+```{r}
+con <- file("en_US/en_US.blogs.txt", "r")
+en.blogs.lines <- readLines(con, 5000)
+close(con)
+```
+
+```{r}
+con <- file("en_US/en_US.news.txt", "r")
+en.news.lines <- readLines(con, 5000)
+close(con)
+```
+
+# Frequencies
+
+Let's see how cleaning words up really changes the top frequency words.
+
+```{r}
+en.twitter.lines %>% VectorSource %>% VCorpus %>%
+        TermDocumentMatrix() %>%
+        as.matrix %>% rowSums %>% sort(decr=T) ->
+        en.twitter.all
+
+en.twitter.lines %>% VectorSource %>% VCorpus %>%
+        TermDocumentMatrix(control=list(
+                tolower=T,
+                removePunctuation=T,
+                stemming=T)) %>%
+        as.matrix %>% rowSums %>% sort(decr=T) ->
+        en.twitter.cleaned
+
+en.twitter.lines %>% VectorSource %>% VCorpus %>%
+        TermDocumentMatrix(control=list(
+                tolower=T,
+                removePunctuation=T,
+                stemming=T,
+                stopwords=stopwords("en"))) %>%
+        as.matrix %>% rowSums %>% sort(decr=T) ->
+        en.twitter.no.stopwords
+en.twitter.all %>% head(10)
+en.twitter.cleaned %>% head(10)
+en.twitter.no.stopwords %>% head(10)
+```
+
+Let's vizualize it.
+
+```{r}
+data <- en.twitter.no.stopwords %>% head(20)
+qplot(factor(names(data), level=names(data)), data,
+      main = "Frequences of words (except stop words)",
+      xlab = "Top 20 stemmed words in sample Twitter posts",
+      ylab = "Occurances per 5000 twits")
+```
+
+We see that lowercasing words increases frequency of "your", presumably
+because it's a popular word to start a sentense with, and that default stop
+words function is subjective (removed "this", kept "get")
+and doesn't adjust for typos like "dont".
+
+Let's see if it's different for blogs.
+
+```{r}
+en.blogs.lines %>% VectorSource %>% VCorpus %>%
+        TermDocumentMatrix() %>%
+        as.matrix %>% rowSums %>% sort(decr=T) %>% head(10) ->
+        all
+
+en.blogs.lines %>% VectorSource %>% VCorpus %>%
+        TermDocumentMatrix(control=list(
+                tolower=T,
+                removePunctuation=T,
+                stemming=T)) %>%
+        as.matrix %>% rowSums %>% sort(decr=T) %>% head(10) ->
+        cleaned
+
+en.blogs.lines %>% VectorSource %>% VCorpus %>%
+        TermDocumentMatrix(control=list(
+                tolower=T,
+                removePunctuation=T,
+                stemming=T,
+                stopwords=stopwords("en"))) %>%
+        as.matrix %>% rowSums %>% sort(decr=T) %>% head(10) ->
+        no.stopwords
+all
+cleaned
+no.stopwords
+```
+
+
+We see that stop words are indeed largely the same. Would news articles
+be different (we won't bother to count stop words).
+
+
+```{r}
+en.news.lines %>% VectorSource %>% VCorpus %>%
+        TermDocumentMatrix(control=list(
+                tolower=T,
+                removePunctuation=T,
+                stemming=T,
+                stopwords=stopwords("en"))) %>%
+        as.matrix %>% rowSums %>% sort(decr=T) %>% head(10)
+```
+
+Let's see top bigrams.
+
+```{r}
+# Function from tm package FAQ
+BigramTokenizer <-
+  function(x)
+    unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)
+
+# Knitr can't allocate enough memory, so let's take a smaller sample
+
+con <- file("en_US/en_US.twitter.txt", "r")
+en.twitter.lines.1000 <- readLines(con, 1000)
+close(con)
+
+en.twitter.lines.1000 %>% VectorSource %>% VCorpus -> vc
+# Do separately, so stopwords would be removed before tokenization
+vc <- vc %>%
+        tm_map(tolower) %>%
+        tm_map(removePunctuation) %>%
+        tm_map(stripWhitespace) %>%
+        tm_map(removeWords, stopwords("en")) %>%
+        tm_map(PlainTextDocument)
+tdm.en.twitter.1000 <-
+        TermDocumentMatrix(vc,control=list(tokenize=BigramTokenizer))
+tdm.en.twitter.1000 %>% as.matrix %>% rowSums %>% sort(decr=T) -> freqs
+head(freqs, 10)
+```
+
+## Distributions of word frequencies
+
+How much more frequent these bigrams actually are? The most popular combination
+"last night" is encountered 11 times per 1000 strings (Twitter posts). How many
+bigrams we have, and how many found more than once?
+
+```{r}
+length(freqs)
+length(freqs[freqs>1])
+```
+
+How many word are encountered only few times?
+
+```{r}
+table(en.twitter.no.stopwords) %>% as.vector -> freq.table
+percent(freq.table[1:5]/sum(freq.table))
+```
+
+So 61% of the words are only encountered once, and 12% - twice.
